@@ -24,17 +24,24 @@
        connexion.
     3. Le script Python se connecte a <IP_ESP32>:TCP_PORT et envoie un
        caractere par touche pressee :
-         'U' -> haut, 'D' -> bas, 'L' -> gauche, 'R' -> droite,
+         Fleches (majuscules) -> 'U'/'D'/'L'/'R' : Joueur 2
+         ZQSD (minuscules)    -> 'u'/'d'/'l'/'r' : Joueur 1 (seul joueur en Solo/Murs)
          'X' -> valider / reset
 
   MENU / MODES DE JEU :
-    Au demarrage (et apres chaque Game Over), un menu s'affiche pour choisir
-    le mode :
-      - Solo : terrain vide, juste les bords.
-      - Murs : des blocs de murs (2-3 cases) sont places aleatoirement sur
-        le terrain. Ils sont dessines en CONTOUR (pas remplis) pour bien les
-        distinguer du serpent, qui lui est dessine en PLEIN.
-    Dans le menu : Haut/Bas pour choisir, 'X' (touche 'r' cote PC) pour valider.
+    Au demarrage (et apres chaque Game Over), un menu en 2 etapes s'affiche
+    (Haut/Bas pour naviguer, 'X' pour valider) :
+      1. Solo ou Multijoueur :
+         - Solo : un seul serpent.
+         - Multijoueur : 2 serpents en meme temps. Joueur 1 (ZQSD) est
+           dessine en gros carres pleins, Joueur 2 (fleches) en petits points
+           centres, pour rester distinguables sur cet ecran monochrome.
+      2. Classique ou Murs :
+         - Classique : terrain vide, juste les bords.
+         - Murs : des blocs de murs (2-3 cases) sont places aleatoirement sur
+           le terrain. Ils sont dessines en CONTOUR (pas remplis) pour bien
+           les distinguer du/des serpent(s), dessine(s) en PLEIN.
+    Ces 2 choix se combinent (ex: Multijoueur + Murs).
 */
 
 #include <WiFi.h>
@@ -71,15 +78,14 @@ const uint8_t GRID_ROWS = (SCREEN_HEIGHT - TITLE_HEIGHT) / CELL_SIZE;
 const uint16_t MAX_SNAKE_LENGTH = GRID_COLS * GRID_ROWS;
 const unsigned long MOVE_INTERVAL_MS = 150;
 
-// ---------- Modes de jeu ----------
-#define MODE_SOLO  0
-#define MODE_WALLS 1
 const uint8_t WALL_BLOCK_COUNT = 6;
 
-enum GameState { STATE_MENU, STATE_PLAYING };
-GameState gameState = STATE_MENU;
-uint8_t menuSelection = MODE_SOLO;
-uint8_t gameMode = MODE_SOLO;
+enum GameState { STATE_MENU_PLAYERS, STATE_MENU_TERRAIN, STATE_PLAYING };
+GameState gameState = STATE_MENU_PLAYERS;
+uint8_t menuPlayerSelection = 0;
+uint8_t menuTerrainSelection = 0;
+bool twoPlayers = false;
+bool useWalls = false;
 
 enum Direction { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
 
@@ -97,6 +103,14 @@ bool gameOver = false;
 unsigned long lastMoveTime = 0;
 uint16_t score = 0;
 
+Point snake2[MAX_SNAKE_LENGTH];
+uint16_t snake2Length;
+Direction currentDirection2;
+Direction pendingDirection2;
+uint16_t score2 = 0;
+bool player1Dead = false;
+bool player2Dead = false;
+
 bool isWall[GRID_COLS][GRID_ROWS];
 
 
@@ -104,10 +118,24 @@ void clearWalls() {
   memset(isWall, 0, sizeof(isWall));
 }
 
-void generateWalls() {
-  clearWalls();
+
+bool isTooCloseToStart(uint8_t cx, uint8_t cy) {
+  if (twoPlayers) {
+    int8_t x1 = GRID_COLS / 4;
+    int8_t y1 = GRID_ROWS / 3;
+    int8_t x2 = GRID_COLS * 3 / 4;
+    int8_t y2 = (GRID_ROWS * 2) / 3;
+    if (abs((int)cx - x1) <= 3 && abs((int)cy - y1) <= 2) return true;
+    if (abs((int)cx - x2) <= 3 && abs((int)cy - y2) <= 2) return true;
+    return false;
+  }
   int8_t centerX = GRID_COLS / 2;
   int8_t centerY = GRID_ROWS / 2;
+  return abs((int)cx - centerX) <= 3 && abs((int)cy - centerY) <= 2;
+}
+
+void generateWalls() {
+  clearWalls();
 
   uint8_t blocksPlaced = 0;
   uint16_t attempts = 0;
@@ -127,13 +155,12 @@ void generateWalls() {
       startY = random(0, GRID_ROWS - blockLen);
     }
 
-    // verifie que la zone est libre et assez loin du point de depart du serpent
     bool free = true;
     for (uint8_t i = 0; i < blockLen; i++) {
       uint8_t cx = horizontal ? (startX + i) : startX;
       uint8_t cy = horizontal ? startY : (startY + i);
       if (isWall[cx][cy]) { free = false; break; }
-      if (abs((int)cx - centerX) <= 3 && abs((int)cy - centerY) <= 2) { free = false; break; }
+      if (isTooCloseToStart(cx, cy)) { free = false; break; }
     }
     if (!free) continue;
 
@@ -159,7 +186,15 @@ void placeFood() {
         break;
       }
     }
-    if (!invalid && gameMode == MODE_WALLS && isWall[food.x][food.y]) {
+    if (!invalid && twoPlayers) {
+      for (uint16_t i = 0; i < snake2Length; i++) {
+        if (snake2[i].x == food.x && snake2[i].y == food.y) {
+          invalid = true;
+          break;
+        }
+      }
+    }
+    if (!invalid && useWalls && isWall[food.x][food.y]) {
       invalid = true;
     }
   } while (invalid);
@@ -178,6 +213,34 @@ void resetGame() {
   lastMoveTime = millis();
 }
 
+
+void resetTwoPlayerGame() {
+  uint8_t row1 = GRID_ROWS / 3;
+  uint8_t row2 = (GRID_ROWS * 2) / 3;
+
+  snakeLength = 3;
+  snake[0] = { (int8_t)(GRID_COLS / 4 + 2), (int8_t)row1 };
+  snake[1] = { (int8_t)(GRID_COLS / 4 + 1), (int8_t)row1 };
+  snake[2] = { (int8_t)(GRID_COLS / 4),     (int8_t)row1 };
+  currentDirection = DIR_RIGHT;
+  pendingDirection = DIR_RIGHT;
+
+  snake2Length = 3;
+  snake2[0] = { (int8_t)(GRID_COLS * 3 / 4 - 2), (int8_t)row2 };
+  snake2[1] = { (int8_t)(GRID_COLS * 3 / 4 - 1), (int8_t)row2 };
+  snake2[2] = { (int8_t)(GRID_COLS * 3 / 4),     (int8_t)row2 };
+  currentDirection2 = DIR_LEFT;
+  pendingDirection2 = DIR_LEFT;
+
+  score = 0;
+  score2 = 0;
+  player1Dead = false;
+  player2Dead = false;
+  gameOver = false;
+  placeFood();
+  lastMoveTime = millis();
+}
+
 bool isOppositeDirection(Direction a, Direction b) {
   return (a == DIR_UP && b == DIR_DOWN) ||
          (a == DIR_DOWN && b == DIR_UP) ||
@@ -185,49 +248,85 @@ bool isOppositeDirection(Direction a, Direction b) {
          (a == DIR_RIGHT && b == DIR_LEFT);
 }
 
-// demarre une partie dans le mode actuellement selectionne dans le menu
 void startGameFromMenu() {
-  gameMode = menuSelection;
-  if (gameMode == MODE_WALLS) {
+  twoPlayers = (menuPlayerSelection == 1);
+  useWalls = (menuTerrainSelection == 1);
+  if (useWalls) {
     generateWalls();
   } else {
     clearWalls();
   }
-  resetGame();
+  if (twoPlayers) {
+    resetTwoPlayerGame();
+  } else {
+    resetGame();
+  }
   gameState = STATE_PLAYING;
 }
 
 void handleDirectionInput(char c) {
-  if (gameState == STATE_MENU) {
+  bool isReset = (c == 'X' || c == 'x');
+
+  if (gameState == STATE_MENU_PLAYERS) {
     switch (c) {
-      case 'U': menuSelection = MODE_SOLO; break;
-      case 'D': menuSelection = MODE_WALLS; break;
-      case 'X': startGameFromMenu(); break;
-      default: break;
+      case 'U': case 'u': menuPlayerSelection = 0; break;
+      case 'D': case 'd': menuPlayerSelection = 1; break;
+      default: if (isReset) gameState = STATE_MENU_TERRAIN; break;
+    }
+    return;
+  }
+
+  if (gameState == STATE_MENU_TERRAIN) {
+    switch (c) {
+      case 'U': case 'u': menuTerrainSelection = 0; break;
+      case 'D': case 'd': menuTerrainSelection = 1; break;
+      default: if (isReset) startGameFromMenu(); break;
     }
     return;
   }
 
   if (gameOver) {
-    if (c == 'X') {
-      gameState = STATE_MENU;
+    if (isReset) {
+      gameState = STATE_MENU_PLAYERS;
     }
     return;
   }
 
+  if (isReset) {
+    // reset manuel en cours de partie, sans repasser par le menu
+    if (twoPlayers) {
+      resetTwoPlayerGame();
+    } else {
+      resetGame();
+    }
+    if (useWalls) generateWalls();
+    return;
+  }
+
+  if (twoPlayers) {
+    // minuscules (ZQSD) -> joueur 1, majuscules (fleches) -> joueur 2
+    switch (c) {
+      case 'u': if (!isOppositeDirection(DIR_UP, currentDirection))     pendingDirection = DIR_UP;    break;
+      case 'd': if (!isOppositeDirection(DIR_DOWN, currentDirection))   pendingDirection = DIR_DOWN;  break;
+      case 'l': if (!isOppositeDirection(DIR_LEFT, currentDirection))  pendingDirection = DIR_LEFT;  break;
+      case 'r': if (!isOppositeDirection(DIR_RIGHT, currentDirection)) pendingDirection = DIR_RIGHT; break;
+      case 'U': if (!isOppositeDirection(DIR_UP, currentDirection2))    pendingDirection2 = DIR_UP;    break;
+      case 'D': if (!isOppositeDirection(DIR_DOWN, currentDirection2))  pendingDirection2 = DIR_DOWN;  break;
+      case 'L': if (!isOppositeDirection(DIR_LEFT, currentDirection2))  pendingDirection2 = DIR_LEFT;  break;
+      case 'R': if (!isOppositeDirection(DIR_RIGHT, currentDirection2)) pendingDirection2 = DIR_RIGHT; break;
+      default: break;
+    }
+    return;
+  }
+
+  // Solo / Murs : un seul serpent, controlable indifferemment par ZQSD ou les fleches
   Direction requested;
   switch (c) {
-    case 'U': requested = DIR_UP; break;
-    case 'D': requested = DIR_DOWN; break;
-    case 'L': requested = DIR_LEFT; break;
-    case 'R': requested = DIR_RIGHT; break;
-    case 'X':
-      // reset manuel en cours de partie, sans repasser par le menu
-      resetGame();
-      if (gameMode == MODE_WALLS) generateWalls();
-      return;
-    default:
-      return;
+    case 'U': case 'u': requested = DIR_UP; break;
+    case 'D': case 'd': requested = DIR_DOWN; break;
+    case 'L': case 'l': requested = DIR_LEFT; break;
+    case 'R': case 'r': requested = DIR_RIGHT; break;
+    default: return;
   }
   // on empeche de faire demi-tour direct sur le serpent
   if (!isOppositeDirection(requested, currentDirection)) {
@@ -238,6 +337,14 @@ void handleDirectionInput(char c) {
 void updateGame() {
   if (gameOver) return;
 
+  if (twoPlayers) {
+    updateTwoPlayerGame();
+  } else {
+    updateSoloGame();
+  }
+}
+
+void updateSoloGame() {
   currentDirection = pendingDirection;
 
   Point newHead = snake[0];
@@ -254,7 +361,7 @@ void updateGame() {
     return;
   }
 
-  if (gameMode == MODE_WALLS && isWall[newHead.x][newHead.y]) {
+  if (useWalls && isWall[newHead.x][newHead.y]) {
     gameOver = true;
     Serial.println("Game Over (mur obstacle) - score final: " + String(score));
     return;
@@ -286,6 +393,103 @@ void updateGame() {
   snake[0] = newHead;
 }
 
+void updateTwoPlayerGame() {
+  currentDirection = pendingDirection;
+  currentDirection2 = pendingDirection2;
+
+  Point newHead1 = snake[0];
+  if (!player1Dead) {
+    switch (currentDirection) {
+      case DIR_UP:    newHead1.y--; break;
+      case DIR_DOWN:  newHead1.y++; break;
+      case DIR_LEFT:  newHead1.x--; break;
+      case DIR_RIGHT: newHead1.x++; break;
+    }
+  }
+
+  Point newHead2 = snake2[0];
+  if (!player2Dead) {
+    switch (currentDirection2) {
+      case DIR_UP:    newHead2.y--; break;
+      case DIR_DOWN:  newHead2.y++; break;
+      case DIR_LEFT:  newHead2.x--; break;
+      case DIR_RIGHT: newHead2.x++; break;
+    }
+  }
+
+  if (!player1Dead && (newHead1.x < 0 || newHead1.x >= GRID_COLS || newHead1.y < 0 || newHead1.y >= GRID_ROWS)) {
+    player1Dead = true;
+  }
+  if (!player2Dead && (newHead2.x < 0 || newHead2.x >= GRID_COLS || newHead2.y < 0 || newHead2.y >= GRID_ROWS)) {
+    player2Dead = true;
+  }
+
+  if (!player1Dead && useWalls && isWall[newHead1.x][newHead1.y]) {
+    player1Dead = true;
+  }
+  if (!player2Dead && useWalls && isWall[newHead2.x][newHead2.y]) {
+    player2Dead = true;
+  }
+
+  // collision tete-a-tete : les deux serpents arrivent sur la meme case
+  if (!player1Dead && !player2Dead && newHead1.x == newHead2.x && newHead1.y == newHead2.y) {
+    player1Dead = true;
+    player2Dead = true;
+  }
+
+  if (!player1Dead) {
+    for (uint16_t i = 0; i < snakeLength; i++) {
+      if (snake[i].x == newHead1.x && snake[i].y == newHead1.y) { player1Dead = true; break; }
+    }
+  }
+  if (!player1Dead) {
+    for (uint16_t i = 0; i < snake2Length; i++) {
+      if (snake2[i].x == newHead1.x && snake2[i].y == newHead1.y) { player1Dead = true; break; }
+    }
+  }
+  if (!player2Dead) {
+    for (uint16_t i = 0; i < snake2Length; i++) {
+      if (snake2[i].x == newHead2.x && snake2[i].y == newHead2.y) { player2Dead = true; break; }
+    }
+  }
+  if (!player2Dead) {
+    for (uint16_t i = 0; i < snakeLength; i++) {
+      if (snake[i].x == newHead2.x && snake[i].y == newHead2.y) { player2Dead = true; break; }
+    }
+  }
+
+  if (!player1Dead) {
+    bool ateFood = (newHead1.x == food.x && newHead1.y == food.y);
+    if (ateFood && snakeLength < MAX_SNAKE_LENGTH) {
+      for (uint16_t i = snakeLength; i > 0; i--) snake[i] = snake[i - 1];
+      snakeLength++;
+      score++;
+      placeFood();
+    } else {
+      for (uint16_t i = snakeLength - 1; i > 0; i--) snake[i] = snake[i - 1];
+    }
+    snake[0] = newHead1;
+  }
+
+  if (!player2Dead) {
+    bool ateFood = (newHead2.x == food.x && newHead2.y == food.y);
+    if (ateFood && snake2Length < MAX_SNAKE_LENGTH) {
+      for (uint16_t i = snake2Length; i > 0; i--) snake2[i] = snake2[i - 1];
+      snake2Length++;
+      score2++;
+      placeFood();
+    } else {
+      for (uint16_t i = snake2Length - 1; i > 0; i--) snake2[i] = snake2[i - 1];
+    }
+    snake2[0] = newHead2;
+  }
+
+  if (player1Dead || player2Dead) {
+    gameOver = true;
+    Serial.println("Game Over - J1: " + String(score) + " / J2: " + String(score2));
+  }
+}
+
 void drawTitle() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -293,16 +497,34 @@ void drawTitle() {
   display.print("DJ SNAKE");
 }
 
-void drawMenu() {
+void drawPlayerMenu() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
   display.setCursor(10, 20);
-  display.print(menuSelection == MODE_SOLO ? "> " : "  ");
+  display.print(menuPlayerSelection == 0 ? "> " : "  ");
   display.println("Solo");
 
   display.setCursor(10, 32);
-  display.print(menuSelection == MODE_WALLS ? "> " : "  ");
+  display.print(menuPlayerSelection == 1 ? "> " : "  ");
+  display.println("Multijoueur");
+
+  display.setCursor(2, 46);
+  display.println("Haut/Bas: choisir");
+  display.setCursor(2, 56);
+  display.println("R: valider");
+}
+
+void drawTerrainMenu() {
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(10, 20);
+  display.print(menuTerrainSelection == 0 ? "> " : "  ");
+  display.println("Classique");
+
+  display.setCursor(10, 32);
+  display.print(menuTerrainSelection == 1 ? "> " : "  ");
   display.println("Murs");
 
   display.setCursor(2, 46);
@@ -315,8 +537,14 @@ void drawGame() {
   display.clearDisplay();
   drawTitle();
 
-  if (gameState == STATE_MENU) {
-    drawMenu();
+  if (gameState == STATE_MENU_PLAYERS) {
+    drawPlayerMenu();
+    display.display();
+    return;
+  }
+
+  if (gameState == STATE_MENU_TERRAIN) {
+    drawTerrainMenu();
     display.display();
     return;
   }
@@ -324,19 +552,29 @@ void drawGame() {
   if (gameOver) {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(20, 20);
+    display.setCursor(20, 18);
     display.println("GAME OVER");
-    display.setCursor(15, 35);
-    display.println("Score: " + String(score));
-    display.setCursor(5, 50);
+    if (twoPlayers) {
+      display.setCursor(10, 30);
+      display.println("J1:" + String(score) + "  J2:" + String(score2));
+      display.setCursor(5, 42);
+      // le vainqueur est celui qui est encore en vie, pas celui qui a le plus de points
+      if (player1Dead && player2Dead) display.println("Egalite !");
+      else if (player1Dead) display.println("Joueur 2 gagne !");
+      else display.println("Joueur 1 gagne !");
+    } else {
+      display.setCursor(15, 33);
+      display.println("Score: " + String(score));
+    }
+    display.setCursor(5, 54);
     display.println("Touche R = menu");
     display.display();
     return;
   }
 
-  // murs (mode "Murs" uniquement) : dessines en CONTOUR pour les distinguer
-  // du serpent, qui lui est dessine en PLEIN
-  if (gameMode == MODE_WALLS) {
+  // murs (si actives) : dessines en CONTOUR pour les distinguer du/des
+  // serpent(s), dessine(s) en PLEIN
+  if (useWalls) {
     for (uint8_t x = 0; x < GRID_COLS; x++) {
       for (uint8_t y = 0; y < GRID_ROWS; y++) {
         if (isWall[x][y]) {
@@ -346,10 +584,33 @@ void drawGame() {
     }
   }
 
+  if (twoPlayers) {
+    // scores affiches en petit dans la bande du titre, aux 2 coins
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 4);
+    display.print("1:" + String(score));
+    display.setCursor(98, 4);
+    display.print("2:" + String(score2));
+  }
+
   display.fillRect(food.x * CELL_SIZE, PLAY_Y_OFFSET + food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, SSD1306_WHITE);
 
-  for (uint16_t i = 0; i < snakeLength; i++) {
-    display.fillRect(snake[i].x * CELL_SIZE, PLAY_Y_OFFSET + snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
+  if (twoPlayers) {
+    if (!player1Dead) {
+      for (uint16_t i = 0; i < snakeLength; i++) {
+        display.fillRect(snake[i].x * CELL_SIZE, PLAY_Y_OFFSET + snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
+      }
+    }
+    if (!player2Dead) {
+      for (uint16_t i = 0; i < snake2Length; i++) {
+        display.fillRect(snake2[i].x * CELL_SIZE + 1, PLAY_Y_OFFSET + snake2[i].y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2, SSD1306_WHITE);
+      }
+    }
+  } else {
+    for (uint16_t i = 0; i < snakeLength; i++) {
+      display.fillRect(snake[i].x * CELL_SIZE, PLAY_Y_OFFSET + snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
+    }
   }
 
   display.display();
@@ -426,8 +687,6 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
-  // init I2C sur les broches reelles (important sur ESP32-S3, dont les
-  // broches I2C par defaut ne correspondent pas forcement a ton cablage)
   Wire.begin(SDA_PIN, SCL_PIN);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -450,10 +709,10 @@ void setup() {
 
   randomSeed(analogRead(0));
 
-  // on demarre sur le menu de selection du mode, pas directement en jeu
   clearWalls();
-  gameState = STATE_MENU;
-  menuSelection = MODE_SOLO;
+  gameState = STATE_MENU_PLAYERS;
+  menuPlayerSelection = 0;
+  menuTerrainSelection = 0;
 }
 
 void loop() {

@@ -1,12 +1,17 @@
 """
-Ce script capte les fleches directionnelles ET les touches ZQSD (comme dans
-la plupart des jeux), plus la touche 'r' pour rejouer :
-    Fleche haut / Z    -> 'U'
-    Fleche bas   / S   -> 'D'
-    Fleche gauche/ Q   -> 'L'
-    Fleche droite/ D   -> 'R'
-    Touche 'r'         -> 'X'  (reset / rejouer)
-    Echap              -> quitte le script
+Ce script capte les fleches directionnelles ET les touches ZQSD. En mode
+"2 Joueurs" sur l'ESP32, elles controlent 2 serpents differents ; en Solo/Murs,
+les deux schemas controlent le meme serpent :
+    Z          -> 'u'  (Joueur 1, haut)
+    S          -> 'd'  (Joueur 1, bas)
+    Q          -> 'l'  (Joueur 1, gauche)
+    D          -> 'r'  (Joueur 1, droite)
+    Fleche haut    -> 'U'  (Joueur 2, haut)
+    Fleche bas     -> 'D'  (Joueur 2, bas)
+    Fleche gauche  -> 'L'  (Joueur 2, gauche)
+    Fleche droite  -> 'R'  (Joueur 2, droite)
+    Touche 'r'     -> 'X'  (reset / rejouer)
+    Echap          -> quitte le script
 """
 
 import socket
@@ -69,16 +74,25 @@ def on_press(key):
     try:
         char = getattr(key, "char", None)
 
-        if key == keyboard.Key.up or char == "z":
+        # Joueur 1 (ZQSD) -> minuscules, Joueur 2 (fleches) -> majuscules
+        if char == "z":
+            send_command("u")
+        elif char == "s":
+            send_command("d")
+        elif char == "q":
+            send_command("l")
+        elif char == "d":
+            send_command("r")
+        elif key == keyboard.Key.up:
             send_command("U")
-        elif key == keyboard.Key.down or char == "s":
+        elif key == keyboard.Key.down:
             send_command("D")
-        elif key == keyboard.Key.left or char == "q":
+        elif key == keyboard.Key.left:
             send_command("L")
-        elif key == keyboard.Key.right or char == "d":
+        elif key == keyboard.Key.right:
             send_command("R")
         elif char == "r":
-            send_command("X")  # reset / rejouer (ne pas confondre avec 'R' = droite)
+            send_command("X")  # reset / rejouer (touche 'r', a ne pas confondre avec la fleche droite)
         elif key == keyboard.Key.esc:
             print("Arret demande (Echap).")
             return False  # stoppe le listener clavier
@@ -96,7 +110,7 @@ def main():
     if not connected.wait(timeout=10):
         print("Toujours pas connecte, le script continue d'essayer en arriere-plan...")
 
-    print("Utilise les fleches directionnelles pour jouer, 'r' pour rejouer, Echap pour quitter.")
+    print("ZQSD = Joueur 1, fleches = Joueur 2, 'r' pour rejouer, Echap pour quitter.")
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
 
