@@ -1,10 +1,4 @@
 """
-Client clavier PC -> ESP32 (WiFi, socket TCP brut) pour le jeu Snake sur OLED.
-
-Pas de WebSocket ni de librairie reseau tierce : on utilise le module
-`socket` standard de Python, qui gere lui-meme la connexion persistante et
-les tentatives de reconnexion si l'ESP32 redemarre.
-
 Ce script capte les fleches directionnelles ET les touches ZQSD (comme dans
 la plupart des jeux), plus la touche 'r' pour rejouer :
     Fleche haut / Z    -> 'U'
@@ -13,20 +7,6 @@ la plupart des jeux), plus la touche 'r' pour rejouer :
     Fleche droite/ D   -> 'R'
     Touche 'r'         -> 'X'  (reset / rejouer)
     Echap              -> quitte le script
-
-PREREQUIS :
-    1. Le PC et l'ESP32 doivent etre sur le MEME reseau WiFi (celui renseigne
-       dans WIFI_SSID / WIFI_PASSWORD du sketch Arduino).
-    2. Recupere l'adresse IP affichee par l'ESP32 dans le Moniteur Serie
-       apres connexion (ex: "Connecte ! IP de l'ESP32 : 192.168.1.42").
-    3. Renseigne ESP32_IP ci-dessous.
-    4. Installe les dependances :
-         pip install -r requirements.txt
-    5. Lance :
-         python pc_keyboard_client.py
-
-Note (Mac) : pynput peut demander une autorisation "Accessibilite" /
-"Monitoring du clavier" dans Reglages Systeme > Confidentialite.
 """
 
 import socket
@@ -36,11 +16,8 @@ import time
 
 from pynput import keyboard
 
-# ---------------------------------------------------------------------------
-# A ADAPTER : l'adresse IP affichee par l'ESP32 dans le Moniteur Serie.
 ESP32_IP = "192.168.191.156"
 ESP32_PORT = 3333
-# ---------------------------------------------------------------------------
 
 sock = None
 sock_lock = threading.Lock()

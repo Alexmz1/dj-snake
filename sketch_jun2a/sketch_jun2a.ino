@@ -1,14 +1,4 @@
 /*
-  Snake sur OLED SSD1306 (128x64 I2C) + ESP32
-  Controle depuis le PC via WiFi, avec un simple socket TCP "brut"
-  (pas de protocole WebSocket, donc AUCUNE librairie externe reseau a
-  installer : WiFi.h est fourni nativement avec le coeur ESP32).
-
-  Le script Python (pc_keyboard_client.py) utilise le module `socket`
-  standard de Python pour se connecter et envoyer les touches. C'est lui qui
-  gere la connexion persistante et les tentatives de reconnexion.
-
-  ---------------------------------------------------------------------------
   CABLAGE (I2C) :
     SSD1306 VCC -> 3V3
     SSD1306 GND -> GND
@@ -43,7 +33,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// ---------- Configuration WiFi (A ADAPTER) ----------
 const char* WIFI_SSID = "decode-etudiants";
 const char* WIFI_PASSWORD = "learnByDoing25!";
 const uint16_t TCP_PORT = 3333;
@@ -51,26 +40,24 @@ const uint16_t TCP_PORT = 3333;
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
 
-// ---------- Configuration ecran ----------
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3C  // adresse I2C la plus courante pour SSD1306 128x64
+#define SCREEN_ADDRESS 0x3C
 
-// A ADAPTER : broches GPIO reelles utilisees pour SDA/SCL sur ta carte.
-// Utilise le sketch i2c_scanner/i2c_scanner.ino pour confirmer ces valeurs
-// avant de televerser ce sketch si l'ecran ne s'allume pas.
 #define SDA_PIN 17
 #define SCL_PIN 18
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// ---------- Configuration du jeu ----------
-const uint8_t CELL_SIZE = 4;                                   // taille d'une case en pixels
-const uint8_t GRID_COLS = SCREEN_WIDTH / CELL_SIZE;             // 32 colonnes
-const uint8_t GRID_ROWS = SCREEN_HEIGHT / CELL_SIZE;            // 16 lignes
+const uint8_t TITLE_HEIGHT = 16;
+const uint8_t PLAY_Y_OFFSET = TITLE_HEIGHT;
+
+const uint8_t CELL_SIZE = 4;
+const uint8_t GRID_COLS = SCREEN_WIDTH / CELL_SIZE;
+const uint8_t GRID_ROWS = (SCREEN_HEIGHT - TITLE_HEIGHT) / CELL_SIZE;
 const uint16_t MAX_SNAKE_LENGTH = GRID_COLS * GRID_ROWS;
-const unsigned long MOVE_INTERVAL_MS = 150;                     // vitesse du serpent
+const unsigned long MOVE_INTERVAL_MS = 150;
 
 enum Direction { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
 
@@ -82,13 +69,13 @@ struct Point {
 Point snake[MAX_SNAKE_LENGTH];
 uint16_t snakeLength;
 Direction currentDirection;
-Direction pendingDirection; // prochaine direction demandee par le joueur
+Direction pendingDirection;
 Point food;
 bool gameOver = false;
 unsigned long lastMoveTime = 0;
 uint16_t score = 0;
 
-// ---------------------------------------------------------------------------
+
 void placeFood() {
   bool onSnake;
   do {
@@ -135,7 +122,7 @@ void handleDirectionInput(char c) {
       resetGame();
       return;
     default:
-      return; // caractere inconnu, on ignore
+      return;
   }
   // on empeche de faire demi-tour direct sur le serpent
   if (!isOppositeDirection(requested, currentDirection)) {
@@ -190,8 +177,17 @@ void updateGame() {
   snake[0] = newHead;
 }
 
+// affiche le titre dans la bande du haut (jaune sur les ecrans bicolores)
+void drawTitle() {
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(40, 4); 
+  display.print("DJ SNAKE");
+}
+
 void drawGame() {
   display.clearDisplay();
+  drawTitle();
 
   if (gameOver) {
     display.setTextSize(1);
@@ -206,12 +202,12 @@ void drawGame() {
     return;
   }
 
-  // nourriture
-  display.fillRect(food.x * CELL_SIZE, food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, SSD1306_WHITE);
+  // nourriture (decalee sous la bande du titre)
+  display.fillRect(food.x * CELL_SIZE, PLAY_Y_OFFSET + food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, SSD1306_WHITE);
 
-  // serpent
+  // serpent (decale sous la bande du titre)
   for (uint16_t i = 0; i < snakeLength; i++) {
-    display.fillRect(snake[i].x * CELL_SIZE, snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
+    display.fillRect(snake[i].x * CELL_SIZE, PLAY_Y_OFFSET + snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
   }
 
   display.display();
@@ -246,7 +242,7 @@ void connectWiFi() {
   Serial.println(")");
 
   unsigned long startAttempt = millis();
-  const unsigned long WIFI_TIMEOUT_MS = 15000; // 15s max avant d'abandonner et reessayer
+  const unsigned long WIFI_TIMEOUT_MS = 15000;
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -285,16 +281,13 @@ void connectWiFi() {
   delay(1500);
 }
 
-// ---------------------------------------------------------------------------
+
 void setup() {
   Serial.begin(115200);
   delay(200);
 
-  // init I2C sur les broches reelles (important sur ESP32-S3, dont les
-  // broches I2C par defaut ne correspondent pas forcement a ton cablage)
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // init ecran
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println("Echec initialisation SSD1306 - verifie le cablage I2C.");
     while (true) delay(1000);
@@ -302,9 +295,12 @@ void setup() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
-  display.setCursor(0, 0);
+  display.setCursor(40, 4);
+  display.println("DJ SNAKE");
+  display.setCursor(20, 30);
   display.println("Demarrage...");
   display.display();
+  delay(1000);
 
   connectWiFi();
   tcpServer.begin();
@@ -315,7 +311,6 @@ void setup() {
 }
 
 void loop() {
-  // accepte un nouveau client si aucun n'est connecte (ou si l'ancien est parti)
   if (!tcpClient || !tcpClient.connected()) {
     WiFiClient newClient = tcpServer.available();
     if (newClient) {
@@ -324,7 +319,6 @@ void loop() {
     }
   }
 
-  // lecture des commandes envoyees par le PC via WiFi
   if (tcpClient && tcpClient.connected()) {
     while (tcpClient.available() > 0) {
       char c = tcpClient.read();
