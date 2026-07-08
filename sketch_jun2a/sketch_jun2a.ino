@@ -25,13 +25,23 @@
     3. Le script Python se connecte a <IP_ESP32>:TCP_PORT et envoie un
        caractere par touche pressee :
          'U' -> haut, 'D' -> bas, 'L' -> gauche, 'R' -> droite,
-         'X' -> reset / rejouer apres game over
+         'X' -> valider / reset
+
+  MENU / MODES DE JEU :
+    Au demarrage (et apres chaque Game Over), un menu s'affiche pour choisir
+    le mode :
+      - Solo : terrain vide, juste les bords.
+      - Murs : des blocs de murs (2-3 cases) sont places aleatoirement sur
+        le terrain. Ils sont dessines en CONTOUR (pas remplis) pour bien les
+        distinguer du serpent, qui lui est dessine en PLEIN.
+    Dans le menu : Haut/Bas pour choisir, 'X' (touche 'r' cote PC) pour valider.
 */
 
 #include <WiFi.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <string.h>
 
 const char* WIFI_SSID = "decode-etudiants";
 const char* WIFI_PASSWORD = "learnByDoing25!";
@@ -43,12 +53,14 @@ WiFiClient tcpClient;
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3C
+#define SCREEN_ADDRESS 0x3C 
+
 
 #define SDA_PIN 17
 #define SCL_PIN 18
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 
 const uint8_t TITLE_HEIGHT = 16;
 const uint8_t PLAY_Y_OFFSET = TITLE_HEIGHT;
@@ -58,6 +70,16 @@ const uint8_t GRID_COLS = SCREEN_WIDTH / CELL_SIZE;
 const uint8_t GRID_ROWS = (SCREEN_HEIGHT - TITLE_HEIGHT) / CELL_SIZE;
 const uint16_t MAX_SNAKE_LENGTH = GRID_COLS * GRID_ROWS;
 const unsigned long MOVE_INTERVAL_MS = 150;
+
+// ---------- Modes de jeu ----------
+#define MODE_SOLO  0
+#define MODE_WALLS 1
+const uint8_t WALL_BLOCK_COUNT = 6;
+
+enum GameState { STATE_MENU, STATE_PLAYING };
+GameState gameState = STATE_MENU;
+uint8_t menuSelection = MODE_SOLO;
+uint8_t gameMode = MODE_SOLO;
 
 enum Direction { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
 
@@ -75,20 +97,72 @@ bool gameOver = false;
 unsigned long lastMoveTime = 0;
 uint16_t score = 0;
 
+bool isWall[GRID_COLS][GRID_ROWS];
+
+
+void clearWalls() {
+  memset(isWall, 0, sizeof(isWall));
+}
+
+void generateWalls() {
+  clearWalls();
+  int8_t centerX = GRID_COLS / 2;
+  int8_t centerY = GRID_ROWS / 2;
+
+  uint8_t blocksPlaced = 0;
+  uint16_t attempts = 0;
+  while (blocksPlaced < WALL_BLOCK_COUNT && attempts < 300) {
+    attempts++;
+    bool horizontal = random(0, 2) == 0;
+    uint8_t blockLen = random(2, 4); // 2 ou 3 cases
+    uint8_t startX, startY;
+
+    if (horizontal) {
+      if (GRID_COLS <= blockLen) continue;
+      startX = random(0, GRID_COLS - blockLen);
+      startY = random(0, GRID_ROWS);
+    } else {
+      if (GRID_ROWS <= blockLen) continue;
+      startX = random(0, GRID_COLS);
+      startY = random(0, GRID_ROWS - blockLen);
+    }
+
+    // verifie que la zone est libre et assez loin du point de depart du serpent
+    bool free = true;
+    for (uint8_t i = 0; i < blockLen; i++) {
+      uint8_t cx = horizontal ? (startX + i) : startX;
+      uint8_t cy = horizontal ? startY : (startY + i);
+      if (isWall[cx][cy]) { free = false; break; }
+      if (abs((int)cx - centerX) <= 3 && abs((int)cy - centerY) <= 2) { free = false; break; }
+    }
+    if (!free) continue;
+
+    for (uint8_t i = 0; i < blockLen; i++) {
+      uint8_t cx = horizontal ? (startX + i) : startX;
+      uint8_t cy = horizontal ? startY : (startY + i);
+      isWall[cx][cy] = true;
+    }
+    blocksPlaced++;
+  }
+}
+
 
 void placeFood() {
-  bool onSnake;
+  bool invalid;
   do {
-    onSnake = false;
+    invalid = false;
     food.x = random(0, GRID_COLS);
     food.y = random(0, GRID_ROWS);
     for (uint16_t i = 0; i < snakeLength; i++) {
       if (snake[i].x == food.x && snake[i].y == food.y) {
-        onSnake = true;
+        invalid = true;
         break;
       }
     }
-  } while (onSnake);
+    if (!invalid && gameMode == MODE_WALLS && isWall[food.x][food.y]) {
+      invalid = true;
+    }
+  } while (invalid);
 }
 
 void resetGame() {
@@ -111,7 +185,36 @@ bool isOppositeDirection(Direction a, Direction b) {
          (a == DIR_RIGHT && b == DIR_LEFT);
 }
 
+// demarre une partie dans le mode actuellement selectionne dans le menu
+void startGameFromMenu() {
+  gameMode = menuSelection;
+  if (gameMode == MODE_WALLS) {
+    generateWalls();
+  } else {
+    clearWalls();
+  }
+  resetGame();
+  gameState = STATE_PLAYING;
+}
+
 void handleDirectionInput(char c) {
+  if (gameState == STATE_MENU) {
+    switch (c) {
+      case 'U': menuSelection = MODE_SOLO; break;
+      case 'D': menuSelection = MODE_WALLS; break;
+      case 'X': startGameFromMenu(); break;
+      default: break;
+    }
+    return;
+  }
+
+  if (gameOver) {
+    if (c == 'X') {
+      gameState = STATE_MENU;
+    }
+    return;
+  }
+
   Direction requested;
   switch (c) {
     case 'U': requested = DIR_UP; break;
@@ -119,7 +222,9 @@ void handleDirectionInput(char c) {
     case 'L': requested = DIR_LEFT; break;
     case 'R': requested = DIR_RIGHT; break;
     case 'X':
+      // reset manuel en cours de partie, sans repasser par le menu
       resetGame();
+      if (gameMode == MODE_WALLS) generateWalls();
       return;
     default:
       return;
@@ -143,14 +248,18 @@ void updateGame() {
     case DIR_RIGHT: newHead.x++; break;
   }
 
-  // collision avec les murs
   if (newHead.x < 0 || newHead.x >= GRID_COLS || newHead.y < 0 || newHead.y >= GRID_ROWS) {
     gameOver = true;
-    Serial.println("Game Over (mur) - score final: " + String(score));
+    Serial.println("Game Over (bord) - score final: " + String(score));
     return;
   }
 
-  // collision avec soi-meme
+  if (gameMode == MODE_WALLS && isWall[newHead.x][newHead.y]) {
+    gameOver = true;
+    Serial.println("Game Over (mur obstacle) - score final: " + String(score));
+    return;
+  }
+
   for (uint16_t i = 0; i < snakeLength; i++) {
     if (snake[i].x == newHead.x && snake[i].y == newHead.y) {
       gameOver = true;
@@ -177,17 +286,40 @@ void updateGame() {
   snake[0] = newHead;
 }
 
-// affiche le titre dans la bande du haut (jaune sur les ecrans bicolores)
 void drawTitle() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(40, 4); 
+  display.setCursor(40, 4);
   display.print("DJ SNAKE");
+}
+
+void drawMenu() {
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(10, 20);
+  display.print(menuSelection == MODE_SOLO ? "> " : "  ");
+  display.println("Solo");
+
+  display.setCursor(10, 32);
+  display.print(menuSelection == MODE_WALLS ? "> " : "  ");
+  display.println("Murs");
+
+  display.setCursor(2, 46);
+  display.println("Haut/Bas: choisir");
+  display.setCursor(2, 56);
+  display.println("R: valider");
 }
 
 void drawGame() {
   display.clearDisplay();
   drawTitle();
+
+  if (gameState == STATE_MENU) {
+    drawMenu();
+    display.display();
+    return;
+  }
 
   if (gameOver) {
     display.setTextSize(1);
@@ -197,15 +329,25 @@ void drawGame() {
     display.setCursor(15, 35);
     display.println("Score: " + String(score));
     display.setCursor(5, 50);
-    display.println("Touche R = rejouer");
+    display.println("Touche R = menu");
     display.display();
     return;
   }
 
-  // nourriture (decalee sous la bande du titre)
+  // murs (mode "Murs" uniquement) : dessines en CONTOUR pour les distinguer
+  // du serpent, qui lui est dessine en PLEIN
+  if (gameMode == MODE_WALLS) {
+    for (uint8_t x = 0; x < GRID_COLS; x++) {
+      for (uint8_t y = 0; y < GRID_ROWS; y++) {
+        if (isWall[x][y]) {
+          display.drawRect(x * CELL_SIZE, PLAY_Y_OFFSET + y * CELL_SIZE, CELL_SIZE, CELL_SIZE, SSD1306_WHITE);
+        }
+      }
+    }
+  }
+
   display.fillRect(food.x * CELL_SIZE, PLAY_Y_OFFSET + food.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, SSD1306_WHITE);
 
-  // serpent (decale sous la bande du titre)
   for (uint16_t i = 0; i < snakeLength; i++) {
     display.fillRect(snake[i].x * CELL_SIZE, PLAY_Y_OFFSET + snake[i].y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1, SSD1306_WHITE);
   }
@@ -213,8 +355,6 @@ void drawGame() {
   display.display();
 }
 
-// ---------------------------------------------------------------------------
-// traduit le code de statut WiFi en message lisible, pour diagnostiquer
 const char* wifiStatusToString(wl_status_t status) {
   switch (status) {
     case WL_NO_SSID_AVAIL:  return "SSID introuvable (reseau invisible ou hors de portee / 5GHz uniquement ?)";
@@ -286,6 +426,8 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
+  // init I2C sur les broches reelles (important sur ESP32-S3, dont les
+  // broches I2C par defaut ne correspondent pas forcement a ton cablage)
   Wire.begin(SDA_PIN, SCL_PIN);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -307,7 +449,11 @@ void setup() {
   Serial.println("Serveur TCP demarre, en attente du script Python...");
 
   randomSeed(analogRead(0));
-  resetGame();
+
+  // on demarre sur le menu de selection du mode, pas directement en jeu
+  clearWalls();
+  gameState = STATE_MENU;
+  menuSelection = MODE_SOLO;
 }
 
 void loop() {
@@ -334,7 +480,9 @@ void loop() {
   unsigned long now = millis();
   if (now - lastMoveTime >= MOVE_INTERVAL_MS) {
     lastMoveTime = now;
-    updateGame();
+    if (gameState == STATE_PLAYING) {
+      updateGame();
+    }
     drawGame();
   }
 }
