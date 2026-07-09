@@ -52,7 +52,7 @@
 
 const char* WIFI_SSID = "decode-etudiants";
 const char* WIFI_PASSWORD = "learnByDoing25!";
-const uint16_t TCP_PORT = 3333;
+const uint16_t TCP_PORT = 3333; // Port pour connexion au code Pyhton
 
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
@@ -68,18 +68,21 @@ WiFiClient tcpClient;
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-
+// Partie titre du jeu (taille en px)
 const uint8_t TITLE_HEIGHT = 16;
 const uint8_t PLAY_Y_OFFSET = TITLE_HEIGHT;
 
+// Partie jeu (taille en px)
 const uint8_t CELL_SIZE = 4;
 const uint8_t GRID_COLS = SCREEN_WIDTH / CELL_SIZE;
 const uint8_t GRID_ROWS = (SCREEN_HEIGHT - TITLE_HEIGHT) / CELL_SIZE;
 const uint16_t MAX_SNAKE_LENGTH = GRID_COLS * GRID_ROWS;
 const unsigned long MOVE_INTERVAL_MS = 150;
 
+// Nombre de blocs max dans le mode murs
 const uint8_t WALL_BLOCK_COUNT = 6;
 
+// Menu mode de jeu
 enum GameState { STATE_MENU_PLAYERS, STATE_MENU_TERRAIN, STATE_PLAYING };
 GameState gameState = STATE_MENU_PLAYERS;
 uint8_t menuPlayerSelection = 0;
@@ -94,6 +97,7 @@ struct Point {
   int8_t y;
 };
 
+// Serpent 1
 Point snake[MAX_SNAKE_LENGTH];
 uint16_t snakeLength;
 Direction currentDirection;
@@ -103,6 +107,7 @@ bool gameOver = false;
 unsigned long lastMoveTime = 0;
 uint16_t score = 0;
 
+// Serpent 2 en cas de multijoueur
 Point snake2[MAX_SNAKE_LENGTH];
 uint16_t snake2Length;
 Direction currentDirection2;
@@ -118,7 +123,7 @@ void clearWalls() {
   memset(isWall, 0, sizeof(isWall));
 }
 
-
+// Vérifiaction qu'il n'y a pas un mur sur le serpent ou trop proche du serpent
 bool isTooCloseToStart(uint8_t cx, uint8_t cy) {
   if (twoPlayers) {
     int8_t x1 = GRID_COLS / 4;
@@ -137,6 +142,7 @@ bool isTooCloseToStart(uint8_t cx, uint8_t cy) {
 void generateWalls() {
   clearWalls();
 
+// On pose des murs de 2 ou 3 cas aléatoirement sur la map
   uint8_t blocksPlaced = 0;
   uint16_t attempts = 0;
   while (blocksPlaced < WALL_BLOCK_COUNT && attempts < 300) {
@@ -173,7 +179,7 @@ void generateWalls() {
   }
 }
 
-
+// La "pomme" apparait aléatoirement sur la map
 void placeFood() {
   bool invalid;
   do {
@@ -200,6 +206,7 @@ void placeFood() {
   } while (invalid);
 }
 
+// La partie recommence
 void resetGame() {
   snakeLength = 3;
   snake[0] = { (int8_t)(GRID_COLS / 2), (int8_t)(GRID_ROWS / 2) };
@@ -213,7 +220,7 @@ void resetGame() {
   lastMoveTime = millis();
 }
 
-
+// La partie recommence pour le multi
 void resetTwoPlayerGame() {
   uint8_t row1 = GRID_ROWS / 3;
   uint8_t row2 = (GRID_ROWS * 2) / 3;
@@ -241,6 +248,7 @@ void resetTwoPlayerGame() {
   lastMoveTime = millis();
 }
 
+// Pass de demi tour possible pour le snake
 bool isOppositeDirection(Direction a, Direction b) {
   return (a == DIR_UP && b == DIR_DOWN) ||
          (a == DIR_DOWN && b == DIR_UP) ||
@@ -248,6 +256,7 @@ bool isOppositeDirection(Direction a, Direction b) {
          (a == DIR_RIGHT && b == DIR_LEFT);
 }
 
+// Démarrage de la partie une fois avoir choisi le mode
 void startGameFromMenu() {
   twoPlayers = (menuPlayerSelection == 1);
   useWalls = (menuTerrainSelection == 1);
@@ -264,9 +273,11 @@ void startGameFromMenu() {
   gameState = STATE_PLAYING;
 }
 
+// Gestion des touches envoyées
 void handleDirectionInput(char c) {
   bool isReset = (c == 'X' || c == 'x');
 
+  // Ici on est dans le menu pour choisir si solo ou multi
   if (gameState == STATE_MENU_PLAYERS) {
     switch (c) {
       case 'U': case 'u': menuPlayerSelection = 0; break;
@@ -276,6 +287,7 @@ void handleDirectionInput(char c) {
     return;
   }
 
+  // Ici on choisit la map, soit classique soit murs
   if (gameState == STATE_MENU_TERRAIN) {
     switch (c) {
       case 'U': case 'u': menuTerrainSelection = 0; break;
@@ -285,6 +297,7 @@ void handleDirectionInput(char c) {
     return;
   }
 
+  // Si un joueur perd, on retourne au menu
   if (gameOver) {
     if (isReset) {
       gameState = STATE_MENU_PLAYERS;
@@ -304,7 +317,7 @@ void handleDirectionInput(char c) {
   }
 
   if (twoPlayers) {
-    // minuscules (ZQSD) -> joueur 1, majuscules (fleches) -> joueur 2
+    // Si multijoueur, joueur 1 joue avec ZQSD, et le joueur 2 avec les flèches
     switch (c) {
       case 'u': if (!isOppositeDirection(DIR_UP, currentDirection))     pendingDirection = DIR_UP;    break;
       case 'd': if (!isOppositeDirection(DIR_DOWN, currentDirection))   pendingDirection = DIR_DOWN;  break;
@@ -319,7 +332,7 @@ void handleDirectionInput(char c) {
     return;
   }
 
-  // Solo / Murs : un seul serpent, controlable indifferemment par ZQSD ou les fleches
+  // Joeuur solo, il peut utiliser ZQSD ou les flèches
   Direction requested;
   switch (c) {
     case 'U': case 'u': requested = DIR_UP; break;
@@ -328,7 +341,7 @@ void handleDirectionInput(char c) {
     case 'R': case 'r': requested = DIR_RIGHT; break;
     default: return;
   }
-  // on empeche de faire demi-tour direct sur le serpent
+  // le serpent ne peut pas faire demi tour
   if (!isOppositeDirection(requested, currentDirection)) {
     pendingDirection = requested;
   }
@@ -355,18 +368,21 @@ void updateSoloGame() {
     case DIR_RIGHT: newHead.x++; break;
   }
 
+  // Si on touche le bord de la map, on perd
   if (newHead.x < 0 || newHead.x >= GRID_COLS || newHead.y < 0 || newHead.y >= GRID_ROWS) {
     gameOver = true;
     Serial.println("Game Over (bord) - score final: " + String(score));
     return;
   }
 
+  // Si on touche un mur, on perd
   if (useWalls && isWall[newHead.x][newHead.y]) {
     gameOver = true;
     Serial.println("Game Over (mur obstacle) - score final: " + String(score));
     return;
   }
 
+  // Si on touche son propre serpend, on perd
   for (uint16_t i = 0; i < snakeLength; i++) {
     if (snake[i].x == newHead.x && snake[i].y == newHead.y) {
       gameOver = true;
@@ -377,7 +393,6 @@ void updateSoloGame() {
 
   bool ateFood = (newHead.x == food.x && newHead.y == food.y);
 
-  // decale le corps (de la queue vers la tete), sauf si on mange (le serpent s'allonge)
   if (ateFood && snakeLength < MAX_SNAKE_LENGTH) {
     for (uint16_t i = snakeLength; i > 0; i--) {
       snake[i] = snake[i - 1];
@@ -393,6 +408,7 @@ void updateSoloGame() {
   snake[0] = newHead;
 }
 
+// Multi les deux serpent avancent en meme temps
 void updateTwoPlayerGame() {
   currentDirection = pendingDirection;
   currentDirection2 = pendingDirection2;
@@ -417,6 +433,7 @@ void updateTwoPlayerGame() {
     }
   }
 
+  // Si on touche le bord de la map, on perd
   if (!player1Dead && (newHead1.x < 0 || newHead1.x >= GRID_COLS || newHead1.y < 0 || newHead1.y >= GRID_ROWS)) {
     player1Dead = true;
   }
@@ -424,6 +441,7 @@ void updateTwoPlayerGame() {
     player2Dead = true;
   }
 
+  // Si on touche un mur, on perd
   if (!player1Dead && useWalls && isWall[newHead1.x][newHead1.y]) {
     player1Dead = true;
   }
@@ -431,7 +449,7 @@ void updateTwoPlayerGame() {
     player2Dead = true;
   }
 
-  // collision tete-a-tete : les deux serpents arrivent sur la meme case
+  // Si on touche le serpent adverse, on perd
   if (!player1Dead && !player2Dead && newHead1.x == newHead2.x && newHead1.y == newHead2.y) {
     player1Dead = true;
     player2Dead = true;
@@ -490,6 +508,8 @@ void updateTwoPlayerGame() {
   }
 }
 
+
+// Affichage du titre du jeu
 void drawTitle() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -497,6 +517,7 @@ void drawTitle() {
   display.print("DJ SNAKE");
 }
 
+// Affichage du menu pour choisir le nombre de joueurs
 void drawPlayerMenu() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -515,6 +536,7 @@ void drawPlayerMenu() {
   display.println("R: valider");
 }
 
+// Affichage du menu pour choisir le mode de jeu
 void drawTerrainMenu() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -533,6 +555,7 @@ void drawTerrainMenu() {
   display.println("R: valider");
 }
 
+// C'est cette partie de code qui va appliquer les fonctions décrite au dessus pour afficher le bon mode de jeu sur l'écran
 void drawGame() {
   display.clearDisplay();
   drawTitle();
@@ -549,6 +572,7 @@ void drawGame() {
     return;
   }
 
+  // La partie se termine on affiche le score de la partie et le gagnant si mutli
   if (gameOver) {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
@@ -558,7 +582,7 @@ void drawGame() {
       display.setCursor(10, 30);
       display.println("J1:" + String(score) + "  J2:" + String(score2));
       display.setCursor(5, 42);
-      // le vainqueur est celui qui est encore en vie, pas celui qui a le plus de points
+      // le vainqueur est celui qui est encore en vie
       if (player1Dead && player2Dead) display.println("Egalite !");
       else if (player1Dead) display.println("Joueur 2 gagne !");
       else display.println("Joueur 1 gagne !");
@@ -572,8 +596,7 @@ void drawGame() {
     return;
   }
 
-  // murs (si actives) : dessines en CONTOUR pour les distinguer du/des
-  // serpent(s), dessine(s) en PLEIN
+  // Les murs ne sont pas pleins pour ne pas etre confondus avec les serpents
   if (useWalls) {
     for (uint8_t x = 0; x < GRID_COLS; x++) {
       for (uint8_t y = 0; y < GRID_ROWS; y++) {
@@ -585,7 +608,6 @@ void drawGame() {
   }
 
   if (twoPlayers) {
-    // scores affiches en petit dans la bande du titre, aux 2 coins
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 4);
@@ -616,6 +638,7 @@ void drawGame() {
   display.display();
 }
 
+// Affichage des logs de connexion sur l'écran
 const char* wifiStatusToString(wl_status_t status) {
   switch (status) {
     case WL_NO_SSID_AVAIL:  return "SSID introuvable (reseau invisible ou hors de portee / 5GHz uniquement ?)";
@@ -628,6 +651,7 @@ const char* wifiStatusToString(wl_status_t status) {
   }
 }
 
+// Connexion au wifi
 void connectWiFi() {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -682,7 +706,7 @@ void connectWiFi() {
   delay(1500);
 }
 
-
+// Connexion TCP avec le script Python
 void setup() {
   Serial.begin(115200);
   delay(200);

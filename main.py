@@ -21,7 +21,7 @@ import time
 
 from pynput import keyboard
 
-ESP32_IP = "192.168.191.156"
+ESP32_IP = "192.168.191.149"
 ESP32_PORT = 3333
 
 sock = None
